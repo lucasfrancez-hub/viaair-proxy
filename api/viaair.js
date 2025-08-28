@@ -2,72 +2,70 @@ export default async function handler(req, res) {
   try {
     const base = "https://www.comprarviagem.com.br/viaair/flight-list";
     const target = new URL(base);
-    for (const [k, v] of Object.entries(req.query)) target.searchParams.set(k, v);
 
+    // Repasse todos os query params
+    for (const [k, v] of Object.entries(req.query || {})) {
+      if (v !== undefined && v !== null && `${v}` !== "") target.searchParams.set(k, v);
+    }
+
+    // Headers "de navegador" para aumentar a chance de vir JSON
     const r = await fetch(target.toString(), {
+      redirect: "follow",
       headers: {
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
         "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.comprarviagem.com.br/",
-        "User-Agent": "ViaAirBot/1.0"
+        "Referer": "https://www.comprarviagem.com.br/viaair/",
+        "Origin": "https://www.comprarviagem.com.br",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
       }
     });
 
+    const status = r.status;
+    const contentType = r.headers.get("content-type") || "";
     const text = await r.text();
-    let data; try { data = JSON.parse(text); } catch { data = null; }
+
+    // DEBUG forçado
+    if (req.query.debug === "1") {
+      const headersObj = {};
+      r.headers.forEach((v, k) => (headersObj[k] = v));
+      return res.status(200).json({
+        debug: {
+          requested: target.toString(),
+          status,
+          contentType,
+          length: text.length,
+          preview: text.slice(0, 700),
+          responseHeaders: headersObj
+        }
+      });
+    }
+
+    // Tenta JSON
+    let data = null;
+    if (contentType.includes("application/json")) {
+      data = JSON.parse(text);
+    } else {
+      try { data = JSON.parse(text); } catch { /* não é json */ }
+    }
 
     if (!data || (!data.flights && !data.items)) {
       return res.status(200).json({
         messages: [
           { text: "Posso preparar propostas sob medida para esse trecho ✈️" },
           { text: "Prefere algum horário de saída, companhia aérea ou incluir bagagem?" }
-        ]
+        ],
+        _debug: { status, contentType, len: text.length }
       });
     }
 
-    const flightsRaw = data.flights || data.items || [];
-    const flights = flightsRaw.map(x => ({
-      airline: x.airline || x.company || "—",
-      dep: x.departureTime || x.departure?.time || "—",
-      arr: x.arrivalTime || x.arrival?.time || "—",
-      stops: Number(x.stops ?? 0),
-      total: Number(x.fare?.total ?? x.price?.total ?? 0),
-      curr: (x.fare?.currency || x.price?.currency || "BRL")
-    }))
-    .filter(f => f.total > 0)
-    .sort((a,b)=>a.total-b.total)
-    .slice(0,3);
+    // Entrega o JSON cru
+    return res.status(200).json(data);
 
-    if (!flights.length) {
-      return res.status(200).json({
-        messages: [
-          { text: "Posso preparar propostas sob medida para esse período ✈️" },
-          { text: "Você prefere algum horário, companhia ou incluir bagagem despachada?" }
-        ]
-      });
-    }
-
-    const fmt = (v,c) => new Intl.NumberFormat("pt-BR",{style:"currency",currency:c||"BRL"}).format(v);
-    const best = flights[0];
-
+  } catch (err) {
     return res.status(200).json({
-      set_attributes: {
-        cv_best_price_total: fmt(best.total, best.curr),
-        cv_best_airline: best.airline,
-        cv_best_departure_time: best.dep,
-        cv_best_arrival_time: best.arr
-      },
-      messages: [
-        { text: "Encontrei boas opções para este trecho 😊" },
-        ...flights.map((f,i)=>({
-          text: `${i+1}) ${f.airline} • ${f.dep} → ${f.arr} • ${f.stops===0?"direto":`${f.stops} parada(s)`} • ${fmt(f.total,f.curr)}`
-        })),
-        { text: "Quer que eu siga com a melhor tarifa agora ou prefere filtrar por horário/companhia?" }
-      ]
-    });
-  } catch {
-    return res.status(200).json({
-      messages: [{ text: "Nossa conversa deu uma pausa. Posso preparar propostas sob medida para você?" }]
+      messages: [{ text: "Não consegui consultar agora, mas posso preparar propostas sob medida para você." }],
+      _error: String(err)
     });
   }
 }
